@@ -5,6 +5,7 @@ import torch.autograd as autograd
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import torch.nn.utils as utils
 import torchvision.transforms as T
 from torch.autograd import Variable
 
@@ -43,9 +44,9 @@ class Policy(nn.Module):
         self.L.bias.data.mul_(0.1)
 
         self.tril_mask = Variable(torch.tril(torch.ones(
-            num_outputs, num_outputs), k=-1).unsqueeze(0))
+            num_outputs, num_outputs), k=-1).unsqueeze(0)).cuda()
         self.diag_mask = Variable(torch.diag(torch.diag(
-            torch.ones(num_outputs, num_outputs))).unsqueeze(0))
+            torch.ones(num_outputs, num_outputs))).unsqueeze(0)).cuda()
 
     def forward(self, inputs):
         x, u = inputs
@@ -80,6 +81,8 @@ class NAF:
         self.action_space = action_space
         self.model = Policy(hidden_size, num_inputs, action_space)
         self.target_model = Policy(hidden_size, num_inputs, action_space)
+	self.model = self.model.cuda()
+	self.target_model = self.target_model.cuda()
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3)
 
         self.gamma = gamma
@@ -90,20 +93,20 @@ class NAF:
 
     def select_action(self, state, exploration=None):
         self.model.eval()
-        mu, _, _ = self.model((Variable(state, volatile=True), None))
+        mu, _, _ = self.model((Variable(state, volatile=True).cuda(), None))
         self.model.train()
         mu = mu.data
         if exploration is not None:
-            mu += torch.Tensor(exploration.noise())
+            mu += torch.Tensor(exploration.noise()).cuda()
 
         return mu.clamp(-1, 1)
 
     def update_parameters(self, batch):
-        state_batch = Variable(torch.cat(batch.state))
-        next_state_batch = Variable(torch.cat(batch.next_state), volatile=True)
-        action_batch = Variable(torch.cat(batch.action))
-        reward_batch = Variable(torch.cat(batch.reward))
-        mask_batch = Variable(torch.cat(batch.mask))
+        state_batch = Variable(torch.cat(batch.state)).cuda()
+        next_state_batch = Variable(torch.cat(batch.next_state), volatile=True).cuda()
+        action_batch = Variable(torch.cat(batch.action)).cuda()
+        reward_batch = Variable(torch.cat(batch.reward)).cuda()
+        mask_batch = Variable(torch.cat(batch.mask)).cuda()
 
         _, _, next_state_values = self.target_model((next_state_batch, None))
         next_state_values.volatile = False
@@ -115,8 +118,9 @@ class NAF:
 
         self.optimizer.zero_grad()
         loss.backward()
-        for param in self.model.parameters():
-            param.grad.data.clamp(-1, 1)
+	utils.clip_grad_norm(self.model.parameters(), 1)
+        #for param in self.model.parameters():
+        #    param.grad.data.clamp(-1, 1)
         self.optimizer.step()
 
         for target_param, param in zip(self.target_model.parameters(), self.model.parameters()):

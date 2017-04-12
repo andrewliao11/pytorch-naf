@@ -1,5 +1,4 @@
-import argparse
-import math
+import argparse, math, os
 from collections import namedtuple
 from itertools import count
 
@@ -12,8 +11,10 @@ from naf import NAF
 from normalized_actions import NormalizedActions
 from ounoise import OUNoise
 from replay_memory import ReplayMemory, Transition
+import pdb
 
 parser = argparse.ArgumentParser(description='PyTorch REINFORCE example')
+parser.add_argument('--env_name', type=str, default='Pendulum-v0')
 parser.add_argument('--gamma', type=float, default=0.99, metavar='G',
                     help='discount factor for reward (default: 0.99)')
 parser.add_argument('--tau', type=float, default=0.001, metavar='G',
@@ -28,8 +29,8 @@ parser.add_argument('--seed', type=int, default=42, metavar='N',
                     help='random seed (default: 42)')
 parser.add_argument('--batch_size', type=int, default=64, metavar='N',
                     help='batch size (default: 64)')
-parser.add_argument('--num_steps', type=int, default=1000, metavar='N',
-                    help='max episode length (default: 1000)')
+parser.add_argument('--num_steps', type=int, default=100, metavar='N',
+                    help='max episode length (default: 100)')
 parser.add_argument('--num_episodes', type=int, default=1000, metavar='N',
                     help='number of episodes (default: 1000)')
 parser.add_argument('--hidden_size', type=int, default=128, metavar='N',
@@ -40,12 +41,17 @@ parser.add_argument('--replay_size', type=int, default=1000000, metavar='N',
                     help='size of replay buffer (default: 1000000)')
 parser.add_argument('--render', action='store_true',
                     help='render the environment')
+# andrew
+parser.add_argument('--ckpt_freq', type=int, default=100)
+parser.add_argument('--display', type=bool, default=False)
 args = parser.parse_args()
 
-env_name = 'Pendulum-v0'
+args.num_steps = args.num_steps*10000
+
+env_name = args.env_name
 env = NormalizedActions(gym.make(env_name))
 
-env = wrappers.Monitor(env, '/tmp/{}-experiment'.format(env_name), force=True)
+#env = wrappers.Monitor(env, '/tmp/{}-experiment'.format(env_name), force=True)
 
 env.seed(args.seed)
 torch.manual_seed(args.seed)
@@ -57,15 +63,19 @@ memory = ReplayMemory(args.replay_size)
 ounoise = OUNoise(env.action_space.shape[0])
 
 rewards = []
+dir = os.path.join('ckpt', args.env_name)
+if not os.path.exists(dir):
+    os.mkdir(dir)
+
 for i_episode in range(args.num_episodes):
     if i_episode < args.num_episodes // 2:
         state = torch.Tensor([env.reset()])
         ounoise.scale = (args.noise_scale - args.final_noise_scale) * max(0, args.exploration_end -
-                                                                          i_episode) / args.exploration_end + args.final_noise_scale
+                                                    i_episode) / args.exploration_end + args.final_noise_scale
         ounoise.reset()
         episode_reward = 0
         for t in range(args.num_steps):
-            action = agent.select_action(state, ounoise)
+            action = agent.select_action(state, ounoise).cpu()
             next_state, reward, done, _ = env.step(action.numpy()[0])
             episode_reward += reward
 
@@ -74,7 +84,7 @@ for i_episode in range(args.num_episodes):
             next_state = torch.Tensor([next_state])
             reward = torch.Tensor([reward])
 
-            if i_episode % 10 == 0:
+            if i_episode % 10 == 0 and args.display:
                 env.render()
 
             memory.push(state, action, mask, next_state, reward)
@@ -82,6 +92,7 @@ for i_episode in range(args.num_episodes):
             state = next_state
 
             if len(memory) > args.batch_size * 5:
+		# update parameter
                 for _ in range(args.updates_per_step):
                     transitions = memory.sample(args.batch_size)
                     batch = Transition(*zip(*transitions))
@@ -102,7 +113,7 @@ for i_episode in range(args.num_episodes):
 
             next_state = torch.Tensor([next_state])
 
-            if i_episode % 10 == 0:
+            if i_episode % 10 == 0 and args.display:
                 env.render()
 
             state = next_state
@@ -110,7 +121,10 @@ for i_episode in range(args.num_episodes):
                 break
 
         rewards.append(episode_reward)
+    if i_episode%args.ckpt_freq == 0:
+	torch.save(agent.model.state_dict(), os.path.join(dir, 'naf-'+str(i_episode)+'.pkl'))
     print("Episode: {}, noise: {}, reward: {}, average reward: {}".format(i_episode, ounoise.scale,
                                                                           rewards[-1], np.mean(rewards[-100:])))
 
+	
 env.close()
